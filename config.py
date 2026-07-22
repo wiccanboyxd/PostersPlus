@@ -90,10 +90,6 @@ JPEG_QUALITY          = max(70, min(95, int(os.environ.get("JPEG_QUALITY", "85")
 # WebP output quality for composited posters (70-95).
 WEBP_QUALITY          = max(70, min(95, int(os.environ.get("WEBP_QUALITY", "85"))))
 
-# Maximum age in years for a title to fetch its release status (like Cinema, Streaming).
-# Prevents showing stale "Cinema" badges on very old titles.
-RELEASE_STATUS_MAX_AGE_YEARS = int(os.environ.get("RELEASE_STATUS_MAX_AGE_YEARS", "5"))
-
 # Feature Defaults 
 
 SHOW_RATING_DISPLAY_MODE = 1
@@ -430,27 +426,44 @@ SCORE_NORMALISERS = {
 
 # Default Sash Priority
 
+# Kept in sync with SASH_SLOTS in configurator.html — the configurator's
+# default order and every bundled preset use this same sequence.
 SASH_PRIORITY: list[str] = [
+    # Prestige — rare and timeless, so they outrank everything else.
     "wins",
     "gg_wins",
     "festival",
     "pic_noms",
+    "metacritic",
     "gg_noms",
+    # Timely — narrow, time-boxed windows.  Above the curated lists below so a
+    # notable-cast match can't bury "this is new right now".
+    "trending",
+    "trending_broad",
+    "premiere",
+    "new_release",
+    "just_added",
+    "new_season",
+    "season_finale",
+    # Curated taste — common matches, so they sit under the timely tier.
     "studio",
     "director",
     "cast",
-    "trending",
-    "new_season",
-    "returning",
-    "premiere",
-    "just_added",
-    "season_finale",
+    # Static flavour — always true, never urgent.
     "cult",
     "foreign",
-    "new_release",
-    "metacritic",
     "true_story",
-    "structural",
-    "trending_broad",
-    "release_status",
+    "short_film",
+    "mini_series",
+    "binge_ready",
+    # Broad lifecycle / release-status fallbacks — match almost everything, so
+    # they sit last and only surface when nothing above did.
+    "returning",
+    "airing",
+    "cancelled",
+    "ended",
+    "physical",
+    "streaming",
+    "cinema",
+    "production",
 ]

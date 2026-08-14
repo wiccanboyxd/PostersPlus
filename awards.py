@@ -1317,6 +1317,9 @@ _FROST_CHROMATIC_S = 0.20
 # frost leans colour, not white), but above thin title text (e.g. the red "RUN" on
 # an otherwise black-and-white poster) so that doesn't override an honest white.
 _FROST_CHROMATIC_W = 0.08
+# A cluster this dark carries no usable colour for a frosted element — it would
+# only make the frost muddy — so it is skipped entirely.
+_FROST_MIN_V = 0.16
 
 
 def _is_skin_tone(r: float, g: float, b: float) -> bool:
@@ -1385,7 +1388,7 @@ def _dominant_cluster(
         _h, s, v = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
         if v > brightest_hsv[0]:
             brightest_hsv, brightest = (v, s), (float(r), float(g), float(b))
-        if v < 0.16:                       # near-black — never a tint source
+        if v < _FROST_MIN_V:               # near-black — never a tint source
             continue
         weight = count / total
         # Population-led, biased toward *chroma* (saturation × value), not raw
@@ -1459,6 +1462,7 @@ def draw_award_badge(
     size_ratio_h: float = 1.0,     # vertical scale multiplier
     notch_style: str = "frosted",     # "silver" | "gold" | "frosted"
     notch_inset: float = 0.004,        # top-edge offset as fraction of poster height (± small)
+    notch_pad_ratio: float = 1.0,     # vertical padding scale; <1 tightens top/bottom space
     font_size_ratio: float = 0.43,    # font size as fraction of badge height
     frost_opacity: float = 0.75,      # frosted overlay opacity (0.0–1.0)
     frost_saturation: float = 1.2,    # frosted colour-cast strength (0 = grey)
@@ -1471,6 +1475,14 @@ def draw_award_badge(
     Centred notch badge that emerges from the top edge of the poster.
     Always horizontally centred; notch_inset nudges it up/down so users
     can control whether the top border is hidden or visible in their client.
+
+    Vertical space is controlled by two independent knobs: size_ratio_h sets the
+    nominal height (and with it the font scale), while notch_pad_ratio trims the
+    empty space above and below the text without touching the font or the badge
+    width.  Reach for notch_pad_ratio when the label looks lost in the notch.
+    Trimming stops once the label's ink reaches the edges, and scales the corner
+    radius and border with it; at font sizes that already fill the notch there is
+    no empty space to reclaim and the control has no effect.
 
     Three styles:
       silver  — dark gradient body with silver trim, white text
@@ -1516,29 +1528,65 @@ def draw_award_badge(
         label = f"★  {label}"
 
     # ── Dimensions ───────────────────────────────────────────────────────────
-    badge_h = int(height * 0.075 * size_ratio_h)
-    bh      = badge_h * SS  # SS-space height (independent of width)
+    # base_h is the nominal height size_ratio_h asks for.  It drives the font
+    # size and the horizontal padding; notch_pad_ratio then scales only the
+    # *drawn* height around that already-sized text.  Keeping the two separate
+    # is what lets padding tighten without shrinking the label or narrowing the
+    # badge — changing size_ratio_h alone moves both, which is rarely wanted.
+    base_h = int(height * 0.075 * size_ratio_h)
 
     # ── Font: fixed size so every label renders at the same scale ────────────
     _fonts_dir   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
-    font_size_ss = int(badge_h * font_size_ratio) * SS
+    font_size_ss = int(base_h * font_size_ratio) * SS
     try:
         font = ImageFont.truetype(os.path.join(_fonts_dir, "Inter-Bold.ttf"), font_size_ss)
     except IOError:
         font = ImageFont.load_default()
 
-    # Measure rendered text width at SS resolution
+    # Measure rendered text at SS resolution — the ink extents drive both the
+    # badge width and the vertical padding floor below.
     _tmp_d  = ImageDraw.Draw(Image.new("L", (1, 1)))
     _tbbox  = _tmp_d.textbbox((0, 0), label, font=font)
     text_w_ss = int(_tbbox[2] - _tbbox[0])
 
+    # Vertical padding.  Floored so an aggressive notch_pad_ratio crops the empty
+    # space but never the glyphs.  _text_center places the line box at
+    # bh/2 - (ascent+descent)/2 - descent + int(ascent*0.22), so ink spans
+    # bh/2 + _k + bbox[1] .. bh/2 + _k + bbox[3]; solving both ends for [0, bh]
+    # gives the smallest height that still fits.  Measured against a reference
+    # string of the tallest and deepest glyphs rather than the label itself, so
+    # every award trims to the same height (cf. _REF in ratings.py) while
+    # accented capitals still clear the border.
+    _PAD_REF = "ÅÄÖÜÀÁÉÓÊÎÑÇgjpqy0★"
+    _ref_bbox = _tmp_d.textbbox((0, 0), _PAD_REF, font=font)
+    try:
+        _ascent, _descent = font.getmetrics()
+    except AttributeError:
+        _ascent, _descent = 0, 0  # matches _text_center's own fallback
+    _k = -(_ascent + _descent) / 2 - _descent + int(_ascent * 0.22)
+    _ink_h_ss = max(-2 * (_k + _ref_bbox[1]), 2 * (_k + _ref_bbox[3]))
+    _min_badge_h = math.ceil(_ink_h_ss * 1.05 / SS)  # 5% keeps ink off the border
+    # The floor may only ever tighten the notch, never grow it past the height
+    # the size and font ratios already asked for.  Without this clamp a
+    # font_size_ratio above ~0.78 would raise badge_h even at the 1.0 default,
+    # re-rendering saved URLs that predate this control.
+    _min_badge_h = min(_min_badge_h, base_h)
+    badge_h = max(_min_badge_h, int(base_h * notch_pad_ratio))
+    bh      = badge_h * SS  # SS-space height (independent of width)
+
     # Badge width: minimum is size_ratio_w-scaled default; expands to fit text
     # with horizontal padding of ~45% of badge_h (22.5% each side).
-    _h_pad    = int(badge_h * 0.70)
+    # Derived from base_h, not badge_h, so tightening the vertical padding
+    # leaves the badge exactly as wide as it was.
+    _h_pad    = int(base_h * 0.70)
     min_badge_w = int(width * 0.28 * size_ratio_w)
     max_badge_w = int(width * 0.70)
     badge_w   = max(min_badge_w, min(max_badge_w, text_w_ss // SS + _h_pad))
 
+    # Corner radius and border scale with the drawn height, not base_h: a radius
+    # derived from the untrimmed height would exceed half of a tightened badge
+    # and distort the rounded rectangle.  Tightening therefore also thins the
+    # border slightly, which keeps the notch in proportion.
     radius   = int(badge_h * 0.32)
     border_w = max(1, int(badge_h * 0.055))
     bw    = badge_w * SS
@@ -1591,11 +1639,14 @@ def draw_award_badge(
         frost.putalpha(Image.fromarray((rr_f * frost_opacity * 255).astype(np.uint8), "L"))
         badge_ss = Image.alpha_composite(blurred_ss, frost)
 
-        # Dark text
+        # Text: dark on a light panel, light on a dark one (a matched panel can be
+        # either — every other frost is light by construction).
         txt_layer = Image.new("RGBA", (bw, bh), (0, 0, 0, 0))
         td = ImageDraw.Draw(txt_layer)
         tx, ty = _text_center(td, label, font, bw / 2, text_cy_ss)
-        td.text((tx, ty), label, font=font, fill=(0, 0, 0, 245))
+        # (text_color is deliberately not consulted here: this style has always
+        # ignored it, and honouring it now would restyle existing posters.)
+        td.text((tx, ty), label, font=font, fill=(*_frost_ink(fr_r, fr_g, fr_b), 245))
         badge_ss = Image.alpha_composite(badge_ss, txt_layer)
 
         badge_final = badge_ss.resize((badge_w, badge_h), Image.Resampling.LANCZOS)
@@ -1744,17 +1795,41 @@ def draw_award_badge(
     return result
 
 
+def _frost_ink(r: float, g: float, b: float) -> tuple[int, int, int]:
+    """Label colour for a frosted panel of this colour — dark on light, light on
+    dark.
+
+    Every frosted surface was light by construction until matching let one take a
+    tinted vignette's own colour, which can be genuinely dark; its label has to
+    follow or the badge stops reading.  The threshold sits well below any colour
+    the other two modes produce (their luminance floor is 0.60), so this only ever
+    changes what a matched panel does.
+    """
+    lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255
+    return (0, 0, 0) if lum >= 0.45 else (238, 238, 240)
+
+
 def _frosted_tint(
-    dr: float, dg: float, db: float, saturation: float = 1.2, reference: bool = False
+    dr: float, dg: float, db: float, saturation: float = 1.2,
+    reference: bool | str = False,
 ) -> tuple[int, int, int]:
     """Poster dominant RGB → the frosted tint shared by the bar, notch and sash so
     they stay consistent.
 
-    Two modes:
+    Three modes:
 
     • Saturation (default) — a light "frosted glass" pastel. ``saturation`` scales
       the source S (1.2 = historical default; 0 = neutral grey). The colour is
       lifted to ~60 %+ Value and mixed 60/40 with white.
+
+    • Match (``reference="match"``) — the frost is standing in for a colour that
+      is already on the poster (a tinted vignette), so it must be *that colour*,
+      lightness included.  Anything else is visibly a different colour sitting
+      next to it: holding hue and chroma while lifting Value for legibility still
+      reads as pale khaki beside dark olive, because lightness is most of what the
+      eye calls "colour".  So the source is returned as it came, floored only
+      short of black, and the caller flips its label to light ink — see
+      _frost_ink.  ``saturation`` is ignored.
 
     • Reference (``reference=True``) — hew to the poster's *true* hue and
       saturation, dropping the pastel whitening so the frost closely matches the
@@ -1772,11 +1847,25 @@ def _frosted_tint(
     # (near-black/grey noise), full by 0.18 (a clear hue, however dark).
     conf = max(0.0, min(1.0, (v * s - 0.05) / 0.13))
 
+    _PANEL_V = 0.85     # how light a dark-text frosted panel has to be
+    _MATCH_MIN_V = 0.12  # ...and how dark a matched one is allowed to get
+
+    if reference == "match":
+        # The source colour, as it is.  Floored just clear of black so the panel
+        # is still a surface rather than a hole; the caller's own gate is what
+        # decides whether there was a colour worth matching in the first place.
+        # No `conf` fade either — that judgement has already been made, and a
+        # source close to neutral should come back close to neutral, not twice
+        # faded.
+        v_out = max(v, _MATCH_MIN_V)
+        return tuple(int(c * 255) for c in colorsys.hsv_to_rgb(h, s, v_out))
     if reference:
         # True poster hue + saturation at a bright value, then just enough white
         # to reach a luminance floor for the dark text — vivid, not pastel.
         s_eff = min(1.0, s) * conf
-        br, bg, bb = (c * 255 for c in colorsys.hsv_to_rgb(h, s_eff, max(v, 0.85)))
+        br, bg, bb = (c * 255 for c in colorsys.hsv_to_rgb(h, s_eff, max(v, _PANEL_V)))
+        # White is added only as far as the dark text needs, so an already-light
+        # colour keeps all of its own.
         lum = (0.299 * br + 0.587 * bg + 0.114 * bb) / 255
         _FLOOR = 0.60
         w = (_FLOOR - lum) / (1.0 - lum) if lum < _FLOOR else 0.0

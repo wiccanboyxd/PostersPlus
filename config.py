@@ -8,6 +8,45 @@
 #     or the project README for a ready-made sample.
 import os
 
+
+def effective_cpus() -> int:
+    """Cores this process may actually use.
+
+    os.cpu_count() reports the HOST's cores, and a Docker `--cpus=` / compose
+    `cpus:` limit is enforced through the CFS quota rather than CPU affinity, so
+    neither os.cpu_count() nor sched_getaffinity sees it.  A container limited to
+    2 CPUs on a 4-core host reports 4 from both.
+
+    That matters because ONNX thread scaling falls off a cliff past the real
+    budget: measured on the detector's production input, a 2-CPU container runs
+    135 ms at 2 threads, 153 ms at 4, 299 ms at 6 and 409 ms at 8.  Oversizing is
+    far more expensive than undersizing, so take the *smallest* figure any source
+    reports.
+    """
+    limits = []
+    try:  # cgroup v2
+        raw = open("/sys/fs/cgroup/cpu.max").read().split()
+        if raw[0] != "max":
+            limits.append(int(raw[0]) / int(raw[1]))
+    except Exception:
+        pass
+    try:  # cgroup v1
+        quota  = int(open("/sys/fs/cgroup/cpu/cpu.cfs_quota_us").read())
+        period = int(open("/sys/fs/cgroup/cpu/cpu.cfs_period_us").read())
+        if quota > 0 and period > 0:
+            limits.append(quota / period)
+    except Exception:
+        pass
+    try:
+        limits.append(len(os.sched_getaffinity(0)))
+    except Exception:
+        pass
+    limits.append(os.cpu_count() or 1)
+    return max(1, int(min(limits)))
+
+
+EFFECTIVE_CPUS = effective_cpus()
+
 # Storage
 
 DB_PATH               = "/app/cache/cache.db"
@@ -22,13 +61,25 @@ AIOSTREAMS_URL        = os.environ.get("AIOSTREAMS_URL", "")
 AIOSTREAMS_AUTH       = os.environ.get("AIOSTREAMS_AUTH", "")
 
 # Quality source selection.
-# QUALITY_SOURCE: "aiostreams" (default) or "scraper".
-# SCRAPER_URL:    Stremio addon manifest/base URL — only used when QUALITY_SOURCE=scraper.
-#                 Example: https://torrentio.stremio.ru/{config}/manifest.json
-# Setting QUALITY_SOURCE=scraper while AIOSTREAMS_URL/AUTH are also set is a
-# misconfiguration — the scraper path is ignored and a warning is logged at startup.
+# QUALITY_SOURCE:   "aiostreams" (default), "scraper", or "qualicache".
+# SCRAPER_URL:      Stremio addon manifest/base URL — only used when QUALITY_SOURCE=scraper.
+#                   Example: https://torrentio.stremio.ru/{config}/manifest.json
+# QUALICACHE_URL:   Base URL of a QualiCache instance — only used when
+#                   QUALITY_SOURCE=qualicache. Example: http://qualicache:8000
+# QUALICACHE_API_KEY: Optional; must match QualiCache's own ACCESS_KEY when set.
+#
+# Unlike aiostreams/scraper, QualiCache never scrapes on the request path: it
+# crawls catalogues in the background and answers from its own SQLite cache, so
+# a cold title returns "pending" instead of blocking on a slow addon. See
+# quality.fetch_quality_from_qualicache for how pending is handled.
+#
+# Setting QUALITY_SOURCE to a non-aiostreams backend while AIOSTREAMS_URL/AUTH
+# are also set is a misconfiguration — the AIOStreams settings are ignored and a
+# warning is logged at startup.
 QUALITY_SOURCE        = os.environ.get("QUALITY_SOURCE", "aiostreams").lower().strip()
 SCRAPER_URL           = os.environ.get("SCRAPER_URL", "").strip()
+QUALICACHE_URL        = os.environ.get("QUALICACHE_URL", "").strip()
+QUALICACHE_API_KEY    = os.environ.get("QUALICACHE_API_KEY", "").strip()
 SERVER_TMDB_KEY       = os.environ.get("TMDB_API_KEY", "").strip()
 SERVER_MDBLIST_KEY    = os.environ.get("MDBLIST_API_KEY", "").strip()
 SERVER_MDBLIST_KEY_2  = os.environ.get("MDBLIST_API_KEY_2", "").strip()
@@ -67,6 +118,28 @@ TVDB_LOGO_PRIORITY    = max(1, min(3, int(os.environ.get("TVDB_LOGO_PRIORITY", "
 # Caps concurrent TVDB API calls so a burst of uncached misses can't stampede it.
 TVDB_CONCURRENCY      = max(1, int(os.environ.get("TVDB_CONCURRENCY", "3")))
 
+# Anime-native art sources (AniList / Kitsu).
+# These engage only when a client passes anilist_id / kitsu_id — no id conversion
+# is ever performed, so metadata providers that only speak imdb/tmdb/tvdb are
+# completely unaffected.  Neither provider requires an API key.
+ANIME_SOURCES_ENABLED = _tvdb_flag("ANIME_SOURCES_ENABLED", True)
+# Composite a title logo over anime cover art. On by default: that art either
+# carries no logotype or a small block of Japanese corner text most viewers
+# can't read, so a proper logo is usually an improvement. Turn off to serve the
+# provider's art untouched. Logos come from TMDB/Metahub/TVDB as usual — neither
+# anime provider ships them — so this needs a tmdb_id or imdb_id on the request.
+ANIME_COMPOSITE_LOGO  = _tvdb_flag("ANIME_COMPOSITE_LOGO", True)
+# Capped per provider, because their limits differ by an order of magnitude.
+# AniList advertises 90 req/min per IP but has served a degraded 30 for a long
+# while (check the x-ratelimit-limit header), so it stays tight. Kitsu publishes
+# no hard limit and answers in ~0.2s, so throttling it to the same degree just
+# serialises a cold catalogue burst for no reason. Art and metadata are cached
+# after first fetch, so either only bites while the cache is cold.
+ANILIST_CONCURRENCY   = max(1, int(os.environ.get("ANILIST_CONCURRENCY", "3")))
+KITSU_CONCURRENCY     = max(1, int(os.environ.get("KITSU_CONCURRENCY", "8")))
+ANILIST_API_URL       = os.environ.get("ANILIST_API_URL", "https://graphql.anilist.co").strip()
+KITSU_API_BASE        = os.environ.get("KITSU_API_BASE", "https://kitsu.io/api/edge").strip().rstrip("/")
+
 # Ordered list of all configured server-side MDBList keys (primary first).
 # Used by the key-rotation logic in main.py to fall back when a key is exhausted.
 SERVER_MDBLIST_KEYS: list[str] = [k for k in [SERVER_MDBLIST_KEY, SERVER_MDBLIST_KEY_2] if k]
@@ -100,6 +173,15 @@ BADGE_DISPLAY_MODE       = 4
 
 POSTER_WIDTH  = 500
 POSTER_HEIGHT = 750
+
+# Landscape Poster Dimensions (16:9)
+#
+# Twice the portrait width so a landscape card on a desktop client still gets a
+# sharp image, and small enough that a WebP stays inside Stremio's 100kb poster
+# guidance.  The source backdrop is fetched at w1280 and fitted down to this.
+
+LANDSCAPE_WIDTH  = 1000
+LANDSCAPE_HEIGHT = 563
 
 # Rating & Genre Label Defaults
 
@@ -148,6 +230,12 @@ TVDB_ARTWORK_CACHE_DURATION  = int(os.environ.get("TVDB_ARTWORK_CACHE_DURATION",
 TVDB_NEG_CACHE_DURATION      = int(os.environ.get("TVDB_NEG_CACHE_DURATION", "3"))         # days
 # Artwork-type catalogue (/artwork/types) almost never changes — cache it long.
 TVDB_TYPES_CACHE_DURATION    = int(os.environ.get("TVDB_TYPES_CACHE_DURATION", "30"))      # days
+# Anime metadata changes slowly once a title has aired, but the community score
+# does drift, so this is shorter than the TVDB artwork window.  Negative results
+# (no such id on the provider) are cached briefly so a newly-added entry appears
+# without waiting out the full window.
+ANIME_METADATA_CACHE_DURATION = int(os.environ.get("ANIME_METADATA_CACHE_DURATION", "7"))  # days
+ANIME_NEG_CACHE_DURATION      = int(os.environ.get("ANIME_NEG_CACHE_DURATION", "3"))       # days
 DAYS_CONSIDERED_NEW          = 14
 NEW_CACHE_DURATION           = 1
 OLD_CACHE_DURATION           = 14
@@ -156,6 +244,41 @@ TRENDING_FETCH_TIME          = os.environ.get("TRENDING_FETCH_TIME", "").strip()
 TRENDING_FETCH_TIMEZONE      = os.environ.get("TRENDING_FETCH_TIMEZONE", "UTC").strip()
 TRENDING_FETCH_COUNT         = int(os.environ.get("TRENDING_FETCH_COUNT", "40"))
 TRENDING_BROAD_FETCH_COUNT   = int(os.environ.get("TRENDING_BROAD_FETCH_COUNT", "100"))
+
+# Where "trending" comes from.  Unset (the default) means TMDB's own global
+# trending endpoint, which is US-weighted and not configurable.  Point these at a
+# URL instead and that list becomes the trending set for its media type — both
+# the sash's ranking and the titles the cache warmer pre-renders.
+#
+# Two payload shapes are accepted, which between them cover almost everything:
+#
+#   TMDB-shaped   {"results": [{"id": 1061474}, ...]}   ranked by array order.
+#                 Any TMDB endpoint works, which is how you get a regional list
+#                 TMDB's /trending cannot express:
+#                   https://api.themoviedb.org/3/discover/movie
+#                     ?api_key=KEY&region=FR&sort_by=popularity.desc
+#
+#   MDBList       a plain array of {"id": <tmdb id>, "rank": n, "mediatype": ...}
+#                 ranked by "rank".  Paste the human list URL and it is converted
+#                 for you — https://mdblist.com/lists/snoak/trending-movies
+#                 becomes .../json automatically, and needs no MDBList API key.
+#                 MDBList aggregates Trakt, Letterboxd, IMDb and others, so this
+#                 is the practical way to seed trending from a service PostersPlus
+#                 does not integrate with directly.
+#
+# The list's own order is the ranking; PostersPlus does not re-sort it. Nothing
+# validates that the list is *actually* trending data — a list of your favourite
+# westerns will be accepted and treated as the trending set.
+#
+# If a configured source fails (unreachable, malformed, or empty after parsing)
+# the error is logged and NO trending data is served for that media type on that
+# refresh, so the trending sash disappears rather than silently reverting to
+# TMDB's list and looking like it worked.
+TRENDING_SOURCE_MOVIE        = os.environ.get("TRENDING_SOURCE_MOVIE", "").strip()
+TRENDING_SOURCE_TV           = os.environ.get("TRENDING_SOURCE_TV", "").strip()
+# Cap on how many entries are taken from a custom source, so a 10k-item list
+# cannot balloon the snapshot held in memory and in trending_cache.
+TRENDING_SOURCE_MAX_ITEMS    = max(1, int(os.environ.get("TRENDING_SOURCE_MAX_ITEMS", "500")))
 # Quality (AIOStreams) TTL — separate from rating TTL because stream availability
 # for older titles is very stable.  New content keeps the 1-day window so fresh
 # encodes are picked up quickly; old content is cached for much longer.
@@ -320,14 +443,33 @@ TEXTLESS_FAKE_REPORT_PATH  = os.environ.get(
 PPOCR_BOX_THRESHOLD        = max(0.0, min(
     1.0, float(os.environ.get("PPOCR_BOX_THRESHOLD", "0.70"))
 ))
-# Independent PP-OCR sessions used for parallel cold-cache scans. Sessions run in
-# a dedicated executor and split available ONNX threads between them. Each extra
-# session costs roughly 25-40 MB with the bundled mobile model. Capped at four and at the detected CPU count.
-# Default 2 suits typical 3+ core hosts; use 1 on smaller hosts. Across worker
-# processes, keep WORKERS x this value at or below available CPU cores.
+# Independent PP-OCR sessions used for parallel cold-cache scans, run in a
+# dedicated executor.  Across worker processes, keep WORKERS x this value at or
+# below EFFECTIVE_CPUS.
+#
+# Default 1, because raising it is a throughput-for-latency trade that usually
+# loses.  Sessions SPLIT the ONNX thread budget rather than adding to it, so on
+# 4 cores 1 session gets 4 intra-op threads and 2 sessions get 2 each.  Measured
+# on real poster art: a single scan is ~88 ms at 1 session but ~139 ms at 2,
+# while bulk throughput moves the other way, 8.9 -> 11.0 scans/s.  Neither
+# setting measurably slows concurrent compositing (0.98x vs 1.09x render latency
+# under saturated OCR), so contention is not the deciding factor.
+#
+# The queue decides it, and the queue is usually not busy: the background scan
+# worker is a single task that drains one item at a time and waits for foreground
+# idle, so it can never occupy a second session.  Extra sessions only earn their
+# keep when many low-vote titles need FOREGROUND scans at once — a cold-cache
+# sweep of a large new library.  Once text_detection_cache is populated, scans
+# are occasional and latency-visible (someone is waiting on that poster), which
+# is exactly where 1 session wins.
+#
+# Memory (measured, bundled mobile model): the first session is ~115 MB, mostly
+# the onnxruntime instance itself, so that is the price of having detection on at
+# all.  Each additional session adds ~50 MB — going 1 -> 2 cost ~86 MB more peak
+# RSS under sustained scanning.
 TEXTLESS_DETECTION_CONCURRENCY = max(1, min(
-    4, os.cpu_count() or 1,
-    int(os.environ.get("TEXTLESS_DETECTION_CONCURRENCY", "2")),
+    EFFECTIVE_CPUS,
+    int(os.environ.get("TEXTLESS_DETECTION_CONCURRENCY", "1")),
 ))
 
 # Rating Score Weight Defaults
@@ -345,6 +487,12 @@ MOVIE_WEIGHTS = {   # set weight of movie ranking providers, must sum to 1
     "tmdb":           0,
     "rogerebert":     0,
     "myanimelist":    0,
+    # Only ever present for titles requested by anilist_id / kitsu_id. A source
+    # that isn't present contributes nothing and the remaining weights
+    # renormalise (see calculate_weighted_score), so a non-zero weight here is
+    # inert for every non-anime title.
+    "anilist":        0,
+    "kitsu":          0,
 }
 
 TV_WEIGHTS = {   # set weight of TV ranking providers, must sum to 1
@@ -356,6 +504,8 @@ TV_WEIGHTS = {   # set weight of TV ranking providers, must sum to 1
     "metacriticuser": 0,
     "tmdb":           0,
     "myanimelist":    0,
+    "anilist":        0,
+    "kitsu":          0,
 }
 
 RATING_MIN_VOTES = max(0, int(os.environ.get("RATING_MIN_VOTES", "10")))
@@ -395,6 +545,41 @@ GENRE_PRIORITY = [
     10764, 10762, 10763, 10766, 10767,
 ]
 
+# Separate ordering for titles requested by anime id, because the list above is
+# tuned for a Western catalogue: there, Horror / Thriller / Mystery / Crime are
+# strong discriminators and Action / Adventure / Drama are generic filler, so
+# they sit near the end. Anime inverts that. Action, Adventure and Fantasy are
+# the *primary* descriptors, while Mystery, Psychological and Supernatural are
+# applied liberally as secondary tags — AniList tags Attack on Titan "Mystery"
+# and Kitsu tags One Piece "Crime". Running anime through the Western order
+# therefore surfaced the least representative label almost every time
+# (One Piece -> Comedy, Evangelion -> Thriller, Hunter x Hunter -> Fantasy).
+#
+# This order was checked against the real genre lists of a sample of well-known
+# titles from both providers. It is a presentation choice, not a correctness
+# one — reorder freely if a different label reads better to you.
+ANIME_GENRE_PRIORITY = [
+    10749,            # Romance — if it's a romance, that's the hook
+    27,               # Horror
+    37,               # Western — vanishingly rare in anime, so highly telling
+    99,               # Documentary — likewise
+    878, 10765,       # Sci-Fi (also where Mecha lands)
+    53,               # Thriller (also where Psychological lands)
+    12,               # Adventure — the long-running shounen staple
+    28, 10759,        # Action
+    9648,             # Mystery — demoted below Action; over-applied in anime
+    14,               # Fantasy (also where Supernatural lands)
+    35,               # Comedy
+    80,               # Crime
+    10752, 10768,     # War (also where Military lands)
+    36,               # History
+    10402,            # Music
+    18,               # Drama (also where Slice of Life lands)
+    10762,            # Kids
+    10751,            # Family
+    16,               # Animation — guaranteed floor, always present
+]
+
 # Text based fallback, not important if everything is working properly
 
 QUALITY_LABELS: dict[str, str] = {
@@ -422,6 +607,9 @@ SCORE_NORMALISERS = {
     "tmdb":           lambda v: v,
     "rogerebert":      lambda v: (v / 4)   * 100,
     "myanimelist":    lambda v: (v / 10)  * 100,
+    # AniList averageScore and Kitsu averageRating are both already percentages.
+    "anilist":        lambda v: v,
+    "kitsu":          lambda v: v,
 }
 
 # Default Sash Priority

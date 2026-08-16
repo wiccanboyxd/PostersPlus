@@ -27,7 +27,7 @@
     "Talk": "Talk Show"
   },
   "sashLabels": {
-    "trendingToday": "Top #{rank} hoy",
+    "trendingToday": "#{rank} hoy",
     "New Season": "Nueva temporada",
     "Returning": "Regresa",
     "Premiere": "Estreno",
@@ -98,5 +98,6 @@
     "Emmy Nominee": "Nominada al Emmy",
     "Globe Winner": "Ganadora del Globo de Oro",
     "Globe Nominee": "Nominada al Globo de Oro"
+    "Cinema": "En Cines",
   }
 }

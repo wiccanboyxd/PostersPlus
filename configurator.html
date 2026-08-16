@@ -3010,6 +3010,7 @@ try{if(localStorage.getItem('postersplus_theme')==='light')document.documentElem
               <select id="cfg-badge-display-mode" onchange="updateBadgeModeHint(); build(); queuePreviewReload()">
                 <option value="0">Hidden</option>
                 <option value="4" selected>Quality Notch</option>
+                <option value="6">Quality Bookmark</option>
                 <option value="2">Quality Badge Row</option>
                 <option value="5">Combined Badge</option>
                 <option value="1">Quality Age Rating</option>
@@ -3018,7 +3019,7 @@ try{if(localStorage.getItem('postersplus_theme')==='light')document.documentElem
             </div>
             <div class="field" id="badge-min-score-field" style="display:none">
               <label class="field-label">Minimum Quality to Display</label>
-              <select id="cfg-badge-min-score" onchange="build(); queuePreviewReload()">
+              <select id="cfg-badge-min-score" onchange="this.dataset.userSet='true'; build(); queuePreviewReload()">
                 <option value="2">HD Web</option>
                 <option value="3">One of 4K, HDR or Remux</option>
                 <option value="4">Two of the above or DV</option>
@@ -3082,14 +3083,14 @@ try{if(localStorage.getItem('postersplus_theme')==='light')document.documentElem
                   <span class="range-val" id="rng-bg">8</span>
                 </div>
               </div>
-              <div class="field">
+              <div class="field" id="badge-x-field">
                 <label class="field-label">Badge Horizontal Position</label>
                 <div class="range-row">
                   <input type="range" id="cfg-badge-x" min="0.01" max="1" step="0.01" value="0.050" oninput="updateRange(this,'rng-bx'); build(); queuePreviewReload()">
                   <span class="range-val" id="rng-bx">0.050</span>
                 </div>
               </div>
-              <div class="field">
+              <div class="field" id="badge-y-field">
                 <label class="field-label">Badge Vertical Position</label>
                 <div class="range-row">
                   <input type="range" id="cfg-badge-y" min="0.01" max="0.95" step="0.005" value="0.050" oninput="updateRange(this,'rng-by'); build(); queuePreviewReload()">
@@ -3662,7 +3663,7 @@ function updateKeyBadges() {
 
 function updateScraperHint() {
   const mode = parseInt(document.getElementById('cfg-badge-display-mode').value);
-  const qualityMode = mode === 1 || mode === 2 || mode === 4 || mode === 5;
+  const qualityMode = mode === 1 || mode === 2 || mode === 4 || mode === 5 || mode === 6;
   document.getElementById('wait-quality-field').style.display = qualityMode ? '' : 'none';
   const aiosHint = document.getElementById('aiostreams-hint');
   if (aiosHint) {
@@ -3694,6 +3695,7 @@ const BADGE_MODE_TIPS = {
   1: 'The font colour reflects stream quality, following medal tiers.',
   4: 'A medal-coloured marker based on stream quality.',
   5: 'Minimalist text badge: resolution · visual tag, pip coloured by source. Needs both resolution and source; visual tag defaults to SDR if absent.',
+  6: 'A small corner bookmark coloured by the same quality tier as Quality Notch.',
 };
 
 function updateBadgeModeHint() {
@@ -3703,17 +3705,24 @@ function updateBadgeModeHint() {
   if (BADGE_MODE_TIPS[mode]) modeLabel.dataset.tip = BADGE_MODE_TIPS[mode];
   else modeLabel.removeAttribute('data-tip');
   document.getElementById('badge-gap-field').style.display         = mode === 2 ? '' : 'none';
-  document.getElementById('badge-min-score-field').style.display   = [1,2,4,5].includes(mode) ? '' : 'none';
+  document.getElementById('badge-min-score-field').style.display   = [1,2,4,5,6].includes(mode) ? '' : 'none';
   document.getElementById('badge-stacked-field').style.display     = mode === 5 ? '' : 'none';
   updateScraperHint();
   // Hide the whole height / horizontal / vertical block when badges are off —
   // those knobs only mean anything when there's a badge being placed.  Gap is
   // already mode-2-only and stays nested under this wrapper, so it follows.
   document.getElementById('badge-layout-fields').style.display     = hidden ? 'none' : '';
+  document.getElementById('badge-x-field').style.display           = mode === 6 ? 'none' : '';
+  document.getElementById('badge-y-field').style.display           = mode === 6 ? 'none' : '';
   if (!hidden) {
-    document.getElementById('cfg-badge-h').value = mode === 4 ? 20 : mode === 2 ? 32 : mode === 5 ? 28 : 36;
-    if ([1,2,4,5].includes(mode)) {
-      document.getElementById('cfg-badge-min-score').value = mode === 1 ? '2' : '5';
+    document.getElementById('cfg-badge-h').value = mode === 6 ? 16 : mode === 4 ? 20 : mode === 2 ? 32 : mode === 5 ? 28 : 36;
+    if ([1,2,4,5,6].includes(mode)) {
+      // The mode's default only seeds an untouched field.  Unlike badge height,
+      // a minimum quality means the same thing in every mode, so once the user
+      // (or an imported URL) has picked one, switching modes must not throw it
+      // away.  Cleared by Reset to Defaults, which re-arms the seeding.
+      const _minScore = document.getElementById('cfg-badge-min-score');
+      if (!_minScore.dataset.userSet) _minScore.value = mode === 1 ? '2' : '5';
     }
   }
 }
@@ -4476,8 +4485,11 @@ function buildBaseParams({ usePlaceholders = false, domainOverride = null } = {}
       params.set('vignette_color_saturation', n('cfg-vignette-sat').toFixed(2));
       params.set('vignette_color_blur',       n('cfg-vignette-blur').toFixed(2));
       params.set('vignette_color_lightness',  n('cfg-vignette-light').toFixed(2));
-      if (c('tog-vignette-ramp')) params.set('vignette_color_ramp', 'true');
-      if (c('tog-vignette-local')) params.set('vignette_color_local', 'true');
+      // Both default to *on* in the renderer, so unlike every other toggle these
+      // have to be written out either way — omitting them when off would leave
+      // the renderer on its default and the switch would never turn anything off.
+      params.set('vignette_color_ramp',  c('tog-vignette-ramp')  ? 'true' : 'false');
+      params.set('vignette_color_local', c('tog-vignette-local') ? 'true' : 'false');
     } }
   if (c('tog-hide-genre')) params.set('hide_genre', 'true');
   params.set('fallback_to_imdb', c('tog-fallback-imdb') ? 'true' : 'false');
@@ -4618,21 +4630,23 @@ function buildBaseParams({ usePlaceholders = false, domainOverride = null } = {}
   // ── Quality Badges ─────────────────────────────────────────────────────────
   params.set('badge_display_mode', badgeMode);
   if (badgeMode !== 0) {
-    params.set('badge_height',   ni('cfg-badge-h'));
-    params.set('badge_anchor_x', n('cfg-badge-x').toFixed(3));
-    params.set('badge_anchor_y', n('cfg-badge-y').toFixed(3));
+    params.set('badge_height', ni('cfg-badge-h'));
+    if (badgeMode !== 6) {
+      params.set('badge_anchor_x', n('cfg-badge-x').toFixed(3));
+      params.set('badge_anchor_y', n('cfg-badge-y').toFixed(3));
+    }
     if (badgeMode === 2) {
       // badge_gap only applies to Quality Badge Row mode
       params.set('badge_gap', ni('cfg-badge-gap'));
     }
-    if ([1,2,4,5].includes(badgeMode)) {
+    if ([1,2,4,5,6].includes(badgeMode)) {
       params.set('badge_min_score', ni('cfg-badge-min-score'));
     }
     if (badgeMode === 5) {
       if (c('tog-badge-stacked')) params.set('combined_badge_stacked', 'true');
     }
   }
-  if (c('tog-wait-quality') && [1,2,4].includes(badgeMode)) {
+  if (c('tog-wait-quality') && [1,2,4,6].includes(badgeMode)) {
     params.set('wait_for_quality', 'true');
     if (c('tog-greyscale-noquality')) params.set('greyscale_no_quality', 'true');
   }
@@ -4701,6 +4715,9 @@ function resetDefaults() {
     if (el.type === 'checkbox') el.checked = el.defaultChecked;
     if (el.type === 'hidden')   el.value   = el.defaultValue || '';
     if (el.tagName === 'SELECT') { for (const opt of el.options) opt.selected = opt.defaultSelected; }
+    // Forget "the user chose this themselves" marks, so the mode-driven
+    // defaults start seeding again from a clean slate.
+    delete el.dataset.userSet;
   });
   onPrimaryClientChange({ rebuild: false });
   // Re-reads both gradient selects: re-hides the custom opacity/height sliders
@@ -5626,6 +5643,12 @@ function importUrl(urlStr, { silent = false, settingsOnly = false, preserveClien
   if (p.has('badge_anchor_y'))          _setEl('cfg-badge-y',          p.get('badge_anchor_y'));
   if (p.has('badge_min_score'))         _setEl('cfg-badge-min-score',  p.get('badge_min_score'));
   else if (p.has('combined_badge_min_score')) _setEl('cfg-badge-min-score', p.get('combined_badge_min_score'));
+  // An imported minimum is as deliberate as a clicked one, so it gets the same
+  // protection from the per-mode seeding above — and this holds whatever order
+  // the restore and updateBadgeModeHint() happen to run in.
+  if (p.has('badge_min_score') || p.has('combined_badge_min_score')) {
+    document.getElementById('cfg-badge-min-score').dataset.userSet = 'true';
+  }
   if (p.has('combined_badge_stacked'))  _setEl('tog-badge-stacked',    p.get('combined_badge_stacked') === 'true');
   if (p.has('wait_for_quality'))   _setEl('tog-wait-quality', p.get('wait_for_quality'));
   if (p.has('greyscale_no_quality')) _setEl('tog-greyscale-noquality', p.get('greyscale_no_quality'));
@@ -5714,6 +5737,7 @@ function _resetFormToDefaults() {
     } else if (el.tagName === 'SELECT') {
       for (const opt of el.options) opt.selected = opt.defaultSelected;
     }
+    delete el.dataset.userSet;
   });
 }
 

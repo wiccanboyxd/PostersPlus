@@ -106,7 +106,7 @@ NOTABLE_STUDIOS: dict[str, str] = {
 
 NOTABLE_DIRECTORS: dict[str, str] = {
     "Christopher Nolan":   "Christopher Nolan",
-    "Denis Villeneuve":    "DenisVilleneuve",
+    "Denis Villeneuve":    "Denis Villeneuve",
     "Martin Scorsese":     "Martin Scorsese",
     "Wes Anderson":        "Wes Anderson",
     "Sofia Coppola":       "Sofia Coppola",
@@ -208,6 +208,7 @@ NOTABLE_CAST: dict[str, str] = {
     "Harris Dickinson":       "H. Dickinson",
     "Mikey Madison":          "Mikey Madison",
     "Josh O'Connor":          "Josh O'Connor",
+    "Benny Emmanuel":          "Benny Emmanuel",
 }
 
 # Within the "structural" bucket, checked in this fixed order
@@ -244,6 +245,7 @@ LANGUAGE_LABELS: dict[str, str] = {
     "fr": "French",
     "de": "German",
     "es": "Spanish",
+    "es-MX": "Mexicana",
     "it": "Italian",
     "pt": "Portuguese",
     "ja": "Japanese",

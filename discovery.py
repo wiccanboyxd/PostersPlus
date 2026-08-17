@@ -208,6 +208,7 @@ NOTABLE_CAST: dict[str, str] = {
     "Harris Dickinson":       "H. Dickinson",
     "Mikey Madison":          "Mikey Madison",
     "Josh O'Connor":          "Josh O'Connor",
+    "Benny Emmanuel":          "Benny Emmanuel",
 }
 
 # Within the "structural" bucket, checked in this fixed order

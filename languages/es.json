@@ -27,7 +27,7 @@
     "Talk": "Talk Show"
   },
   "sashLabels": {
-    "trendingToday": "Top #{rank} hoy",
+    "trendingToday": "#{rank} hoy",
     "New Season": "Nueva temporada",
     "Returning": "Regresa",
     "Premiere": "Estreno",
@@ -40,6 +40,7 @@
     "Short Film": "Cortometraje",
     "Mini Series": "Miniserie",
     "Binge Ready": "Para maratonear",
+    "cinema": "En cines",
     "Foreign": "Extranjera",
     "French": "Francés",
     "German": "Alemán",
